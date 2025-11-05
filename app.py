@@ -420,6 +420,24 @@ def stream_zhipu_ai_response(question: str, pet_profile: Optional[PetProfile] = 
         yield f"data: {error_msg}\n\n"
 
 
+@app.get("/")
+async def root():
+    """根路径，用于健康检查"""
+    return {
+        "status": "ok",
+        "message": "宠物食品安全 AI 问答后端服务运行中",
+        "version": "1.0.0",
+        "endpoints": {
+            "ask": "/ask",
+            "docs": "/docs"
+        }
+    }
+
+@app.get("/health")
+async def health_check():
+    """健康检查端点"""
+    return {"status": "healthy"}
+
 @app.post("/ask")
 async def ask_ai(request: AskRequest):
     """处理前端发起的 AI 问答请求（流式响应）。"""
