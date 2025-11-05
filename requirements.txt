@@ -1,5 +1,6 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.0
+gunicorn==21.2.0
 zai-sdk==0.0.4
 python-dotenv==1.0.1
 
