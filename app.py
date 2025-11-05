@@ -277,9 +277,13 @@ def stream_zhipu_ai_response(question: str, pet_profile: Optional[PetProfile] = 
     full_content_buffer = []
     api_key: Optional[str] = os.getenv("ZHIPU_API_KEY")
     if not api_key:
+        logger.error("❌ ZHIPU_API_KEY 环境变量未配置")
         error_msg = json.dumps({"error": "服务器未配置 AI 服务，请联系管理员。"}, ensure_ascii=False)
         yield f"data: {error_msg}\n\n"
         return
+    
+    # 记录 API Key 是否配置（不记录实际值）
+    logger.info("✅ ZHIPU_API_KEY 已配置（长度: %d）", len(api_key) if api_key else 0)
 
     # 优化：立即发送"思考中"状态，让前端立即知道请求已收到（优化首字节时间）
     # 这样即使后续处理慢，用户也能立即看到响应
@@ -415,8 +419,14 @@ def stream_zhipu_ai_response(question: str, pet_profile: Optional[PetProfile] = 
         yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
 
     except Exception as exc:
+        error_detail = str(exc)
         logger.error("❌ 调用智谱 AI 失败：%s", exc)
-        error_msg = json.dumps({"error": "AI 服务暂时不可用，请稍后再试。"}, ensure_ascii=False)
+        logger.error("❌ 错误详情：%s", error_detail)
+        # 在开发/调试模式下返回详细错误信息
+        if logger.level <= logging.DEBUG:
+            error_msg = json.dumps({"error": f"AI 服务调用失败：{error_detail}"}, ensure_ascii=False)
+        else:
+            error_msg = json.dumps({"error": "AI 服务暂时不可用，请稍后再试。"}, ensure_ascii=False)
         yield f"data: {error_msg}\n\n"
 
 
