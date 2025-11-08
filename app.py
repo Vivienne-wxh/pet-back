@@ -71,15 +71,31 @@ class AskRequest(BaseModel):
 
 # 智谱 AI 配置常量。
 
-def build_system_prompt(pet_profile: Optional[PetProfile] = None) -> str:
-    """构建系统提示词，根据宠物档案信息动态生成。
+def is_safety_question(question: str) -> bool:
+    """判断问题是否为"能不能吃"类安全问题。
     
     Args:
+        question: 用户问题
+        
+    Returns:
+        如果是"能不能吃"类问题返回True，否则返回False
+    """
+    safety_keywords = ["能吃", "不能吃", "可以吃", "不可以吃", "安全", "有毒", "危险", "有害", "会不会", "是否", "能不能", "能不能给"]
+    return any(keyword in question for keyword in safety_keywords)
+
+def build_system_prompt(question: str, pet_profile: Optional[PetProfile] = None) -> str:
+    """构建系统提示词，根据问题类型和宠物档案信息动态生成。
+    
+    Args:
+        question: 用户问题
         pet_profile: 宠物档案信息
         
     Returns:
         系统提示词字符串
     """
+    # 判断问题类型：是否为"能不能吃"类问题
+    is_safety = is_safety_question(question)
+    
     # 优化：简化提示词，减少token数，加快响应
     base_prompt = "你是宠物营养专家。简要回答。\n重要：只输出最终答案，不要输出思考过程、推理过程或任何标签（如<thinking>、<reasoning>等）。"
     
@@ -89,7 +105,13 @@ def build_system_prompt(pet_profile: Optional[PetProfile] = None) -> str:
         allergies_str = "、".join(pet_profile.allergies)
         base_prompt += f"\n过敏原：{pet_name}对{allergies_str}过敏。如食物含过敏原，标记【高危预警】，禁止喂食。"
     
-    base_prompt += "\n格式：\n【风险等级】：[等级]\n【风险点】：[风险]\n【喂养建议】：[建议]"
+    # 根据问题类型选择回答格式
+    if is_safety:
+        # "能不能吃"类问题：使用标准格式
+        base_prompt += "\n格式：\n【风险等级】：[等级]\n【风险点】：[风险]\n【喂养建议】：[建议]"
+    else:
+        # 其他问题：自然回答，无需固定格式
+        base_prompt += "\n回答方式：自然、专业、简洁，直接回答问题即可，无需使用固定格式。"
     
     return base_prompt
 
@@ -153,16 +175,21 @@ def filter_thinking_content(content: str) -> str:
     
     return content
 
-def format_ai_response(text: str) -> str:
-    """格式化AI回答，确保【风险等级】、【风险点】、【喂养建议】独立成行。
+def format_ai_response(text: str, is_safety_question: bool = True) -> str:
+    """格式化AI回答，根据问题类型决定是否格式化。
     
     Args:
         text: 原始AI回答文本
+        is_safety_question: 是否为"能不能吃"类问题，只有这类问题才需要格式化
         
     Returns:
-        格式化后的文本
+        格式化后的文本（如果是"能不能吃"类问题）或原始文本（其他问题）
     """
     if not text:
+        return text
+    
+    # 如果不是"能不能吃"类问题，直接返回原始文本，不进行格式化
+    if not is_safety_question:
         return text
     
     # 移除文本首尾空白
@@ -301,18 +328,21 @@ def stream_zhipu_ai_response(question: str, pet_profile: Optional[PetProfile] = 
 
     client = _zhipu_client
 
-    # 1. RAG 检索：根据用户问题从知识库中获取相关信息（优化：快速检索，减少开销）
+    # 1. 判断问题类型：是否为"能不能吃"类问题
+    is_safety = is_safety_question(question)
+
+    # 2. RAG 检索：根据用户问题从知识库中获取相关信息（优化：快速检索，减少开销）
     rag_context = get_rag_info(question)
 
-    # 2. 根据宠物档案构建动态系统提示词（优化：简化提示词长度）
-    system_prompt = build_system_prompt(pet_profile)
+    # 3. 根据问题类型和宠物档案构建动态系统提示词（优化：简化提示词长度）
+    system_prompt = build_system_prompt(question, pet_profile)
     
-    # 3. 构造完整的用户 Prompt：原始问题 + RAG 检索结果
+    # 4. 构造完整的用户 Prompt：原始问题 + RAG 检索结果
     full_user_prompt = question
     if rag_context:
         full_user_prompt += rag_context
 
-    # 4. 构造 messages 列表
+    # 5. 构造 messages 列表
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": full_user_prompt},
@@ -399,19 +429,24 @@ def stream_zhipu_ai_response(question: str, pet_profile: Optional[PetProfile] = 
             if logger.level <= logging.DEBUG:
                 logger.debug(f"📝 原始AI回答（前200字符）: {repr(full_text[:200])}")
             
-            # 检查是否包含三个必要部分
-            has_risk_level = '【风险等级】' in full_text
-            has_risk_point = '【风险点】' in full_text
-            has_feeding_advice = '【喂养建议】' in full_text
-            
-            if not has_feeding_advice:
-                logger.warning("⚠️ AI回答缺少【喂养建议】部分，可能是max_tokens不足或被截断")
-            
-            formatted_text = format_ai_response(full_text)
-            
-            # 发送格式化后的文本（如果格式有变化）
-            if formatted_text != full_text:
-                yield f"data: {json.dumps({'formatted': formatted_text}, ensure_ascii=False)}\n\n"
+            # 只有"能不能吃"类问题才检查格式和进行格式化
+            if is_safety:
+                # 检查是否包含三个必要部分
+                has_risk_level = '【风险等级】' in full_text
+                has_risk_point = '【风险点】' in full_text
+                has_feeding_advice = '【喂养建议】' in full_text
+                
+                if not has_feeding_advice:
+                    logger.warning("⚠️ AI回答缺少【喂养建议】部分，可能是max_tokens不足或被截断")
+                
+                formatted_text = format_ai_response(full_text, is_safety_question=True)
+                
+                # 发送格式化后的文本（如果格式有变化）
+                if formatted_text != full_text:
+                    yield f"data: {json.dumps({'formatted': formatted_text}, ensure_ascii=False)}\n\n"
+            else:
+                # 非"能不能吃"类问题，不进行格式化，直接使用原始回答
+                logger.info("ℹ️ 非安全问题，跳过格式化处理")
 
         # 发送结束标记
         total_time = time.time() - start_time
